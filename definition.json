@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "id": "halcyon",
+  "name": "Halcyon",
+  "press": "page",
+  "parameters": [
+    {"id":"warmth","label":"Warmth","default":0.2,"mapping":{"kind":"linear","minimum":0,"maximum":1},"display":"percent"},
+    {"id":"swell","label":"Swell","default":0.4,"mapping":{"kind":"linear","minimum":0,"maximum":1},"display":"percent"},
+    {"id":"drift","label":"Drift","default":0,"mapping":{"kind":"linear","minimum":0,"maximum":1},"display":"percent"},
+    {"id":"air","label":"Air","default":0,"mapping":{"kind":"linear","minimum":0,"maximum":1},"display":"percent"},
+    {"id":"hiss","label":"Hiss","control":0,"default":0,"mapping":{"kind":"linear","minimum":0,"maximum":1},"display":"percent"},
+    {"id":"chord","label":"Chord","control":1,"default":0,"mapping":{"kind":"linear","minimum":0,"maximum":1},"display":"percent"},
+    {"id":"ensemble","label":"Ensemble","control":2,"default":0,"mapping":{"kind":"linear","minimum":0,"maximum":1},"display":"percent"},
+    {"id":"age","label":"Age","control":3,"default":0,"mapping":{"kind":"linear","minimum":0,"maximum":1},"display":"percent"}
+  ],
+  "presets": {
+    "Rhubarb":{"warmth":0.75,"swell":0.55,"drift":0.45,"air":0.15,"hiss":0.35,"chord":0,"ensemble":0.4,"age":0.5},
+    "Ascent":{"warmth":0.25,"swell":0.7,"drift":0.2,"air":0.6,"hiss":0.1,"chord":0.25,"ensemble":0.2,"age":0.15},
+    "Pure":{"warmth":0,"swell":0.3,"drift":0,"air":0,"hiss":0,"chord":0,"ensemble":0,"age":0},
+    "Fog":{"warmth":0.55,"swell":0.85,"drift":0.6,"air":0.35,"hiss":0.6,"chord":0.5,"ensemble":0.5,"age":0.4},
+    "Lunar":{"warmth":0.15,"swell":0.95,"drift":0.25,"air":1,"hiss":0.15,"chord":0.75,"ensemble":0.3,"age":0.1}
+  },
+  "resources": {
+    "voiceBytes":168,"voiceAlignment":4,"voiceCapacity":16,"sharedBytes":4,
+    "outputPeakQ31":536870912,
+    "display":{"stateBytes":144,"stateAlignment":4,"paths":0,"points":0,"nodes":102,"texts":16,"palette":12}
+  }
+}
