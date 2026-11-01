@@ -61,7 +61,6 @@ inline void ease(i32& value, i32 target, i32 rate) { value += multiply(target - 
 
 const u32 block_hertz = 6233086u;      // phase per block for 1 Hz: 2^32 * 64 / 44100
 const i32 full = 0x7fffffff;
-const i32 damping = 1342177280;        // the low-pass's damping 1.25, halved, Q31: no resonant peak
 const i32 coefficient_limit = 0x59999999;  // 0.7: keeps the low-pass stable
 const i32 output_gain = 0x2e147ae1;    // 0.36 of half scale: chords stay clean
 const i32 knee = 0x20000000;           // 1.0 in Q29: above this the mix is rounded off gently...
@@ -223,8 +222,8 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
         main_gain = full - multiply(v.copy_level, 0x33333333);                         // 1.0 -> 0.6
         copy_gain = multiply(v.copy_level, 0x4ccccccd);                                // 0 -> 0.6
     }
-    const i32 copy_sine_gain = multiply(sine_gain, copy_gain), copy_saw_gain = multiply(saw_gain, copy_gain);
-    const i32 main_sine_gain = multiply(sine_gain, main_gain), main_saw_gain = multiply(saw_gain, main_gain);
+    i32 copy_sine_gain = multiply(sine_gain, copy_gain), copy_saw_gain = multiply(saw_gain, copy_gain);
+    i32 main_sine_gain = multiply(sine_gain, main_gain), main_saw_gain = multiply(saw_gain, main_gain);
 
     // --- Air: the late octaves -----------------------------------------------
     const u32 wait = 103u + (swell * 827u >> 15);                                 // 0.15 .. 1.35 s
@@ -255,6 +254,11 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     // whole stays about as loud however many layers sound.
     const i32 added = v.up_level + v.down_level + v.fifth_level + v.ninth_level;
     const i32 base = full - multiply(added, 0x50000000);                           // 5/8 of the added share
+    // Folded into the note's own gains, once a block, rather than every sample.
+    main_sine_gain = multiply(main_sine_gain, base);
+    main_saw_gain = multiply(main_saw_gain, base);
+    copy_sine_gain = multiply(copy_sine_gain, base);
+    copy_saw_gain = multiply(copy_saw_gain, base);
 
     // --- Hiss: noise between about 1 and 7 kHz ---------------------------------
     // Up to 20% it is a steady hiss; from 10% particles appear and quickly take
@@ -295,9 +299,13 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     i32 level = v.level;
     v.level = target;
 
+    // A held pitch (the usual case): its bent increment is worked out once a block.
+    bool held = true;
+    for (unsigned i = 1; i < opxy::block_frames; ++i) if (pitch[i] != pitch0) { held = false; break; }
+    const u32 steady_increment = pitch0 + static_cast<u32>(multiply(static_cast<i32>(pitch0), bend));
     for (unsigned i = 0; i < opxy::block_frames; ++i) {
         const u32 p = pitch[i];
-        const u32 increment = p + static_cast<u32>(multiply(static_cast<i32>(p), bend));
+        const u32 increment = held ? steady_increment : p + static_cast<u32>(multiply(static_cast<i32>(p), bend));
         i32 tone = multiply(table_sine(v.phase) << 14, main_sine_gain);           // Q29
         i32 saws = 0;
         u32 copy_increment = 0;
@@ -314,7 +322,7 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
             }
             // State-variable low-pass, 12 dB per octave; both saws share it.
             v.low += multiply(v.band, f);
-            const i32 high = saws - v.low - (multiply(v.band, damping) << 1);
+            const i32 high = saws - v.low - v.band - (v.band >> 2);           // damping 1.25: shifts, not a multiply
             v.band += multiply(high, f);
             // Subtracted: a rising saw's fundamental is opposite the sine's, and
             // the two must reinforce, not cancel.
@@ -323,7 +331,6 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
             v.soft += multiply(v.low - v.soft, f);
             tone -= v.soft;
         }
-        tone = multiply(tone, base);
         if (layered) {
             tone += multiply(table_sine(v.phase_up) << 14, v.up_level);
             tone += multiply(table_sine(v.phase_down) << 14, v.down_level);
