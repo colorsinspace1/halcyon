@@ -10,7 +10,7 @@
 //               it also sets the depth of six very slow built-in sines on the other knobs
 //   3 Air       late copies an octave up, then an octave down (Ascent's delayed octaves)
 // Page 2:
-//   4 Hiss      bright tape hiss that soon breaks up into particles: dust, crackle, rain
+//   4 Hiss      bright tape hiss that soon breaks up into particles, which also flick the filter open
 //   5 Chord     adds a pure fifth, then a ninth, to every note
 //   6 Ensemble  a second, slightly detuned copy that slowly beats against the first
 //   7 Age       tape saturation, a rounded top and a little wobble in level
@@ -122,6 +122,7 @@ inline void start(Voice& v, Shared& shared, opxy::u32) {
     v.dust = 0;
     v.dust_decay = 0;
     v.dust_low = 0;
+    v.dust_random = 0x9e3779b9u ^ v.random;
     v.tape = 0;
     v.level = 0;
 }
@@ -313,6 +314,27 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
             copy_increment = increment + static_cast<u32>(multiply(static_cast<i32>(increment), copy_detune));
             tone += multiply(table_sine(v.copy_phase) << 14, copy_sine_gain);
         }
+        // Hiss's particles: short bursts of bright noise, 2 to 8 ms, at random
+        // levels. Half is heard as it is; the other half goes into the saw's
+        // low-pass, and each particle also kicks the low-pass open for a moment,
+        // so the tone flickers and moves with them (the old noise-into-filter trick).
+        i32 grain = 0;
+        if (dust_gain) {
+            v.dust_random = v.dust_random * 1664525u + 1013904223u;
+            const u32 roll = v.dust_random;
+            if (roll < dust_chance) {
+                const u32 pick = roll * 2891336453u + 1u;
+                v.dust = static_cast<i32>(0x26666666u + ((pick * 747796405u) >> 2));     // 0.3 .. 0.8
+                v.dust_decay = 2131000000 + static_cast<i32>((pick >> 12) & 0x3fffu) * 600;
+            }
+            if (v.dust > 0x10000) {
+                v.dust = multiply(v.dust, v.dust_decay);
+                const i32 white = static_cast<i32>(roll * 747796405u) >> 2;           // Q29
+                v.dust_low += (white - v.dust_low) >> 3;                              // under about 900 Hz away
+                grain = multiply(multiply((white - v.dust_low) << 1, v.dust), dust_gain);
+                tone += grain >> 1;
+            }
+        }
         if (saw_gain) {
             const i32 a = smooth_saw ? soft_saw(v.phase, increment, inverse) : static_cast<i32>(v.phase ^ 0x80000000u) >> 3;
             saws = multiply(a << 1, main_saw_gain);
@@ -321,15 +343,23 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
                 saws += multiply(b << 1, copy_saw_gain);
             }
             // State-variable low-pass, 12 dB per octave; both saws share it.
-            v.low += multiply(v.band, f);
+            saws += grain;
+            i32 fi = f;
+            if (grain) {                                                      // a particle opens it, up to about 3x
+                const i32 bump = multiply(f, multiply(v.dust, dust_gain));
+                fi = bump >= (coefficient_limit - f) >> 3 ? coefficient_limit : f + (bump << 3);
+            }
+            v.low += multiply(v.band, fi);
             const i32 high = saws - v.low - v.band - (v.band >> 2);           // damping 1.25: shifts, not a multiply
-            v.band += multiply(high, f);
+            v.band += multiply(high, fi);
             // Subtracted: a rising saw's fundamental is opposite the sine's, and
             // the two must reinforce, not cancel.
             // A third pole at the same cutoff: 18 dB an octave, so the saw's upper
             // harmonics fall away smoothly instead of fizzing.
-            v.soft += multiply(v.low - v.soft, f);
+            v.soft += multiply(v.low - v.soft, fi);
             tone -= v.soft;
+        } else {
+            tone += grain >> 1;                                               // no saw: all of it heard as it is
         }
         if (layered) {
             tone += multiply(table_sine(v.phase_up) << 14, v.up_level);
@@ -353,7 +383,7 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
             ease(v.tape, saturated, tape_rate);
             tone += multiply(v.tape - tone, wet);
         }
-        if (hiss_gain || dust_gain) {
+        if (hiss_gain) {
             v.random = v.random * 1664525u + 1013904223u;                         // one step of a cheap noise source
             const i32 white = static_cast<i32>(v.random) >> 2;                    // Q29
             // The steady hiss: about 2 to 10 kHz, brighter than tape's old 1 to 7.
@@ -361,19 +391,6 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
             v.hiss_high += rise - (rise >> 2);
             v.hiss_low += (v.hiss_high - v.hiss_low) >> 2;
             tone += multiply((v.hiss_high - v.hiss_low) << 1, hiss_gain);
-            if (dust_gain) {
-                // A particle: a short burst of bright noise, 2 to 8 ms, at a random level.
-                const u32 roll = v.random * 2891336453u + 1u;
-                if (roll < dust_chance) {
-                    v.dust = static_cast<i32>(0x26666666u + ((roll * 747796405u) >> 2));   // 0.3 .. 0.8
-                    v.dust_decay = 2131000000 + static_cast<i32>((roll >> 12) & 0x3fffu) * 600;
-                }
-                if (v.dust > 0x10000) {
-                    v.dust = multiply(v.dust, v.dust_decay);
-                    v.dust_low += (white - v.dust_low) >> 3;                      // under about 900 Hz away
-                    tone += multiply(multiply((white - v.dust_low) << 1, v.dust), dust_gain);
-                }
-            }
         }
         // A soft ceiling: untouched up to the knee, then curving smoothly over.
         if (tone > knee || tone < -knee) {

@@ -26,6 +26,7 @@ struct Voice {
     // Hiss: band-limited noise. Age: the tape's rounded top and level wobble.
     opxy::i32 hiss_low, hiss_high;
     opxy::i32 dust, dust_decay, dust_low;   // Hiss's particles: one grain's level, its fade, and a high-pass
+    opxy::u32 dust_random;
     opxy::i32 tape;                    // Age's low-pass state, Q29
     opxy::u32 reel;
     opxy::i32 wobble, wobble_target;

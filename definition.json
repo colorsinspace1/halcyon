@@ -21,7 +21,7 @@
     "Lunar":{"warmth":0.15,"swell":0.95,"drift":0.25,"air":1,"hiss":0.15,"chord":0.75,"ensemble":0.3,"age":0.1}
   },
   "resources": {
-    "voiceBytes":184,"voiceAlignment":4,"voiceCapacity":16,"sharedBytes":4,
+    "voiceBytes":188,"voiceAlignment":4,"voiceCapacity":16,"sharedBytes":4,
     "outputPeakQ31":536870912,
     "display":{"stateBytes":144,"stateAlignment":4,"paths":0,"points":0,"nodes":102,"texts":16,"palette":12}
   }
