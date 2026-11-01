@@ -10,7 +10,7 @@
 //               it also sets the depth of six very slow built-in sines on the other knobs
 //   3 Air       late copies an octave up, then an octave down (Ascent's delayed octaves)
 // Page 2:
-//   4 Hiss      soft tape hiss and air that swells with each note
+//   4 Hiss      bright tape hiss that soon breaks up into particles: dust, crackle, rain
 //   5 Chord     adds a pure fifth, then a ninth, to every note
 //   6 Ensemble  a second, slightly detuned copy that slowly beats against the first
 //   7 Age       tape saturation, a rounded top and a little wobble in level
@@ -119,6 +119,9 @@ inline void start(Voice& v, Shared& shared, opxy::u32) {
     v.down_level = 0;
     v.hiss_low = 0;
     v.hiss_high = 0;
+    v.dust = 0;
+    v.dust_decay = 0;
+    v.dust_low = 0;
     v.tape = 0;
     v.level = 0;
 }
@@ -253,7 +256,15 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     const i32 base = full - multiply(added, 0x50000000);                           // 5/8 of the added share
 
     // --- Hiss: noise between about 1 and 7 kHz ---------------------------------
-    const i32 hiss_gain = q31(hiss * hiss >> 15 >> 2);                            // up to 0.25, gentle at first
+    // Up to 20% it is a steady hiss; from 10% particles appear and quickly take
+    // over: a few a second at first, about 200 a second at full, while the
+    // steady hiss falls back to a whisper underneath.
+    const u32 steady = hiss <= 6554u ? hiss * 5u : 32767u - ((hiss - 6554u) * 24575u / 26213u);  // Q15, peak at 20%
+    const i32 hiss_gain = q31(steady * steady >> 15 >> 3);                        // up to 0.125
+    const u32 grains = hiss > 3277u ? (hiss - 3277u) * 32767u / 29490u : 0u;      // Q15, 0 at 10%
+    const u32 dust_rate = grains ? 4u + (196u * (grains * grains >> 15) >> 15) : 0u;  // particles a second
+    const u32 dust_chance = dust_rate * 97391u;                                   // per sample, of 2^32
+    const i32 dust_gain = grains ? q31(1966u + (grains * 7864u >> 15)) : 0;       // 0.06 .. 0.30
 
     // --- Age: saturation, a rounded top, a little wobble in level -------------
     // Age comes in on a curve: barely there below 15, then growing.
@@ -283,7 +294,6 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     i32 level = v.level;
     v.level = target;
 
-    i32 hiss_value = 0;
     for (unsigned i = 0; i < opxy::block_frames; ++i) {
         const u32 p = pitch[i];
         const u32 increment = p + static_cast<u32>(multiply(static_cast<i32>(p), bend));
@@ -332,17 +342,27 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
             ease(v.tape, saturated, tape_rate);
             tone += multiply(v.tape - tone, wet);
         }
-        if (hiss_gain) {
-            // The hiss runs at half rate: each new value is held for two samples.
-            if (!(i & 1u)) {
-                v.random = v.random * 1664525u + 1013904223u;                     // one step of a cheap noise source
-                const i32 white = static_cast<i32>(v.random) >> 2;                // Q29
-                const i32 rise = white - v.hiss_high;
-                v.hiss_high += rise - (rise >> 2);                                // about 7 kHz down
-                v.hiss_low += (v.hiss_high - v.hiss_low) >> 2;                    // about 1 kHz up
-                hiss_value = multiply((v.hiss_high - v.hiss_low) << 1, hiss_gain);
+        if (hiss_gain || dust_gain) {
+            v.random = v.random * 1664525u + 1013904223u;                         // one step of a cheap noise source
+            const i32 white = static_cast<i32>(v.random) >> 2;                    // Q29
+            // The steady hiss: about 2 to 10 kHz, brighter than tape's old 1 to 7.
+            const i32 rise = white - v.hiss_high;
+            v.hiss_high += rise - (rise >> 2);
+            v.hiss_low += (v.hiss_high - v.hiss_low) >> 2;
+            tone += multiply((v.hiss_high - v.hiss_low) << 1, hiss_gain);
+            if (dust_gain) {
+                // A particle: a short burst of bright noise, 2 to 8 ms, at a random level.
+                const u32 roll = v.random * 2891336453u + 1u;
+                if (roll < dust_chance) {
+                    v.dust = static_cast<i32>(0x26666666u + ((roll * 747796405u) >> 2));   // 0.3 .. 0.8
+                    v.dust_decay = 2131000000 + static_cast<i32>((roll >> 12) & 0x3fffu) * 600;
+                }
+                if (v.dust > 0x10000) {
+                    v.dust = multiply(v.dust, v.dust_decay);
+                    v.dust_low += (white - v.dust_low) >> 3;                      // under about 900 Hz away
+                    tone += multiply(multiply((white - v.dust_low) << 1, v.dust), dust_gain);
+                }
             }
-            tone += hiss_value;
         }
         // A soft ceiling: untouched up to the knee, then curving smoothly over.
         if (tone > knee || tone < -knee) {

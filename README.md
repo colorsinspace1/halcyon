@@ -30,7 +30,7 @@ Press any encoder to switch pages.
 
 | Page 2 | At 0 | Turning up |
 | --- | --- | --- |
-| **Hiss** | Clean | Soft tape hiss and air that swell with each note |
+| **Hiss** | Clean | Bright tape hiss that soon breaks up into particles (dust, crackle, rain), swelling with each note |
 | **Chord** | One note | A pure fifth joins every note, then a ninth |
 | **Ensemble** | One voice | A second copy, 4 to 14 cents apart and slowly sweeping, like an old string machine |
 | **Age** | New tape | Gentle saturation, a rounded top and a slight wobble in level, fading in from about 15 |
