@@ -183,6 +183,12 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
         breath_scale = static_cast<u32>(32768 + ((v.breath_smooth * static_cast<i32>(drift) >> 15) * 18432 >> 15));
     }
 
+    // --- High notes: kept soft ----------------------------------------------
+    // Above about C5 (523 Hz) the tone's brightness stops climbing with the note:
+    // the low-pass, the octave-up and the ninth stay where they were, and the
+    // level eases down a little (about 4 dB two octaves higher), as on a piano.
+    const u32 high_point = 50960000u;                                             // 523 Hz (C5)
+    const u32 tilt = pitch0 <= high_point ? 32767u : (high_point >> 12) * 32767u / (pitch0 >> 12);  // Q15
     // --- Warmth: sine, and the soft saw through its low-pass ------------------
     const i32 sine_gain = q31(32767u - (warmth >> 1));
     const i32 saw_gain = q31(warmth * 24576u >> 15);                              // up to 0.75
@@ -191,6 +197,7 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     u32 ratio = 384u + (warmth * 1024u >> 15);                                    // Q8
     ratio = ratio * opening >> 15;
     ratio = ratio * breath_scale >> 15;
+    ratio = ratio * tilt >> 15;
     u32 m = 804u * ratio >> 8;
     if (!m) m = 1;
     const u32 rate = pitch0 >> 8;
@@ -221,7 +228,7 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     const i32 fade_rate = static_cast<i32>(0x7fffffffu / fade);
     i32 up_target = 0, down_target = 0;
     if (air && pitch0 < 0x3fffffffu && v.blocks > wait)
-        up_target = q31((air >= 16384u ? 32767u : air << 1) * 9830u >> 15);       // max 0.30
+        up_target = q31(((air >= 16384u ? 32767u : air << 1) * 9830u >> 15) * tilt >> 15);   // max 0.30
     if (air > 16384u && v.blocks > wait * 3u / 2u)
         down_target = q31(((air - 16384u) << 1) * 9175u >> 15);                   // max 0.28
     ease(v.up_level, up_target, fade_rate);
@@ -233,9 +240,9 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     // --- Chord: a pure fifth (3:2), then a ninth (9:4), with the note ----------
     i32 fifth_target = 0, ninth_target = 0;
     if (chord && pitch0 < 0x55555555u)
-        fifth_target = q31((chord >= 16384u ? 32767u : chord << 1) * 8192u >> 15);  // max 0.25
+        fifth_target = q31(((chord >= 16384u ? 32767u : chord << 1) * 8192u >> 15) * ((32767u + tilt) >> 1) >> 15);  // max 0.25
     if (chord > 16384u && pitch0 < 0x38e38e38u)
-        ninth_target = q31(((chord - 16384u) << 1) * 5898u >> 15);                // max 0.18
+        ninth_target = q31((((chord - 16384u) << 1) * 5898u >> 15) * tilt >> 15);   // max 0.18
     ease(v.fifth_level, fifth_target, knob_rate);
     ease(v.ninth_level, ninth_target, knob_rate);
     const bool chorded = v.fifth_level > 0x10000 || v.ninth_level > 0x10000;
@@ -271,6 +278,7 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     // --- Level: the bloom, ramped smoothly across the block --------------------
     i32 target = multiply(q31(shape), output_gain);
     target = multiply(target, q31(wobble_scale));
+    target = multiply(target, q31(16384u + (tilt >> 1)));                      // high notes a little softer
     const i32 ramp = (target - v.level) >> 6;
     i32 level = v.level;
     v.level = target;
