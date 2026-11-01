@@ -113,6 +113,7 @@ inline void start(Voice& v, Shared& shared, opxy::u32) {
     v.phase_ninth = 0;
     v.low = 0;
     v.band = 0;
+    v.soft = 0;
     v.bloom = 0;
     v.blocks = 0;
     v.up_level = 0;
@@ -195,9 +196,9 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     // --- Warmth: sine, and the soft saw through its low-pass ------------------
     const i32 sine_gain = q31(32767u - (warmth >> 1));
     const i32 saw_gain = q31(warmth * 24576u >> 15);                              // up to 0.75
-    // The low-pass follows the note: 1.5x to 5.5x its pitch, opened by the bloom
+    // The low-pass follows the note: 1.25x to 4.5x its pitch, opened by the bloom
     // and moved by the breath. Coefficient f = pi * ratio * increment, Q31.
-    u32 ratio = 384u + (warmth * 1024u >> 15);                                    // Q8
+    u32 ratio = 320u + (warmth * 832u >> 15);                                     // Q8: 1.25x .. 4.5x
     ratio = ratio * opening >> 15;
     ratio = ratio * breath_scale >> 15;
     ratio = ratio * tilt >> 15;
@@ -317,7 +318,10 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
             v.band += multiply(high, f);
             // Subtracted: a rising saw's fundamental is opposite the sine's, and
             // the two must reinforce, not cancel.
-            tone -= v.low;
+            // A third pole at the same cutoff: 18 dB an octave, so the saw's upper
+            // harmonics fall away smoothly instead of fizzing.
+            v.soft += multiply(v.low - v.soft, f);
+            tone -= v.soft;
         }
         tone = multiply(tone, base);
         if (layered) {

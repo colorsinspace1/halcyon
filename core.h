@@ -8,6 +8,7 @@ struct Voice {
     // the late octaves and the chord tones run on their own phases.
     opxy::u32 phase, copy_phase, phase_up, phase_down, phase_fifth, phase_ninth;
     opxy::i32 low, band;               // the saws' state-variable low-pass, Q29
+    opxy::i32 soft;                    // and a third pole after it, Q29: a silkier top
     // Swell: the bloom's position, 0 at the key press to full at the end, Q31.
     opxy::u32 bloom;
     opxy::u32 blocks;                  // blocks since the note started (stops counting at the top)
