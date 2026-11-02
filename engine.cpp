@@ -292,7 +292,6 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     } else {
         v.dust = 0;
     }
-    i32 band_noise = 0;
     const bool noisy = hiss_gain || dust_live;
     // A sounding particle nudges the saw's low-pass open a little, set
     // once a block from the particle's level (it fades over several blocks).
@@ -330,95 +329,137 @@ inline void render(Voice& v, Shared& shared, opxy::u32, opxy::Output output,
     i32 level = v.level;
     v.level = target;
 
-    // A held pitch (the usual case): its bent increment is worked out once a block.
-    bool held = true;
-    for (unsigned i = 1; i < opxy::block_frames; ++i) if (pitch[i] != pitch0) { held = false; break; }
-    const u32 steady_increment = pitch0 + static_cast<u32>(multiply(static_cast<i32>(pitch0), bend));
-    for (unsigned i = 0; i < opxy::block_frames; ++i) {
-        const u32 p = pitch[i];
-        const u32 increment = held ? steady_increment : p + static_cast<u32>(multiply(static_cast<i32>(p), bend));
-        i32 tone = multiply(table_sine(v.phase) << 14, main_sine_gain);           // Q29
-        i32 saws = 0;
-        u32 copy_increment = 0;
-        if (doubled) {
-            copy_increment = increment + static_cast<u32>(multiply(static_cast<i32>(increment), copy_detune));
-            tone += multiply(table_sine(v.copy_phase) << 14, copy_sine_gain);
+    // The block is worked out in passes, one sound at a time, each a short loop
+    // with nothing to decide inside it: the OP-XY's processor runs those fastest.
+    const unsigned N = opxy::block_frames;
+    u32 inc[N];
+    {
+        bool held = true;
+        for (unsigned i = 1; i < N; ++i) if (pitch[i] != pitch0) { held = false; break; }
+        if (held) {
+            const u32 steady_increment = pitch0 + static_cast<u32>(multiply(static_cast<i32>(pitch0), bend));
+            for (unsigned i = 0; i < N; ++i) inc[i] = steady_increment;
+        } else {
+            for (unsigned i = 0; i < N; ++i) inc[i] = pitch[i] + static_cast<u32>(multiply(static_cast<i32>(pitch[i]), bend));
         }
-        // Hiss's particles: short bursts of bright noise, 2 to 8 ms, at random
-        // levels. Half is heard as it is; the other half goes into the saw's
-        // low-pass, and each particle also kicks the low-pass open for a moment,
-        // so the tone flickers and moves with them (the old noise-into-filter trick).
-        // One band of noise, about 2 to 10 kHz, worked out every other sample
-        // and held; the hiss and the particles both use it.
-        if (noisy && !(i & 1u)) {
+    }
+    i32 tone[N];
+    // Extras: what goes into the saw's low-pass besides the saw (the ensemble's
+    // saw, the particles) and what is heard straight (the ensemble's sine, the
+    // particles' other half). Only filled when one of them sounds.
+    const bool extras = doubled || dust_live;
+    i32 extra_in[N], extra_out[N];
+    // One band of noise, about 2 to 10 kHz, worked out every other sample and
+    // held; the hiss and the particles both use it.
+    i32 noise[N];
+    if (noisy) {
+        for (unsigned i = 0; i < N; i += 2) {
             v.random = v.random * 1664525u + 1013904223u;                         // one step of a cheap noise source
             const i32 white = static_cast<i32>(v.random) >> 2;                    // Q29
             v.hiss_high += (white - v.hiss_high) - ((white - v.hiss_high) >> 3);
             v.hiss_low += (v.hiss_high - v.hiss_low) >> 2;
-            band_noise = (v.hiss_high - v.hiss_low) << 1;
+            noise[i] = noise[i + 1] = (v.hiss_high - v.hiss_low) << 1;
         }
-        i32 grain = 0;
+    }
+    if (extras) {
+        for (unsigned i = 0; i < N; ++i) extra_in[i] = extra_out[i] = 0;
         if (dust_live) {
-            dust_now += dust_step;
-            grain = multiply(band_noise, dust_now);
-            tone += grain >> 1;
-        }
-        if (saw_gain) {
-            const i32 a = smooth_saw ? soft_saw(v.phase, increment, inverse) : static_cast<i32>(v.phase ^ 0x80000000u) >> 3;
-            saws = multiply(a << 1, main_saw_gain);
-            if (doubled) {
-                const i32 b = smooth_saw ? soft_saw(v.copy_phase, copy_increment, inverse) : static_cast<i32>(v.copy_phase ^ 0x80000000u) >> 3;
-                saws += multiply(b << 1, copy_saw_gain);
+            // Hiss's particles: half heard as they are, half into the saw's
+            // low-pass (all heard straight when there is no saw).
+            for (unsigned i = 0; i < N; ++i) {
+                dust_now += dust_step;
+                const i32 grain = multiply(noise[i], dust_now);
+                extra_in[i] = grain;
+                extra_out[i] = grain >> 1;
             }
-            // State-variable low-pass, 12 dB per octave; both saws share it.
-            saws += grain;
-            v.low += multiply(v.band, fi);
-            const i32 high = saws - v.low - v.band - (v.band >> 2);           // damping 1.25: shifts, not a multiply
-            v.band += multiply(high, fi);
-            // Subtracted: a rising saw's fundamental is opposite the sine's, and
-            // the two must reinforce, not cancel.
-            // A third pole at the same cutoff: 18 dB an octave, so the saw's upper
-            // harmonics fall away smoothly instead of fizzing.
-            v.soft += multiply(v.low - v.soft, fi);
-            tone -= v.soft;
+            if (!saw_gain) for (unsigned i = 0; i < N; ++i) extra_out[i] += extra_out[i];
+        }
+        if (doubled) {
+            // The ensemble's copy, slightly detuned: its sine heard, its saw into the low-pass.
+            u32 cp = v.copy_phase;
+            for (unsigned i = 0; i < N; ++i) {
+                const u32 ci = inc[i] + static_cast<u32>(multiply(static_cast<i32>(inc[i]), copy_detune));
+                extra_out[i] += multiply(table_sine(cp) << 14, copy_sine_gain);
+                if (saw_gain) {
+                    const i32 b = smooth_saw ? soft_saw(cp, ci, inverse) : static_cast<i32>(cp ^ 0x80000000u) >> 3;
+                    extra_in[i] += multiply(b << 1, copy_saw_gain);
+                }
+                cp += ci;
+            }
+            v.copy_phase = cp;
+        }
+    }
+    // The note: its sine, and its saw through the low-pass (12 dB an octave,
+    // then a third pole: 18 dB, so the saw's upper harmonics fall away smoothly).
+    // Subtracted: a rising saw's fundamental is opposite the sine's.
+    {
+        u32 ph = v.phase;
+        if (saw_gain) {
+            i32 low = v.low, band = v.band, soft = v.soft;
+            for (unsigned i = 0; i < N; ++i) {
+                i32 saws = multiply((smooth_saw ? soft_saw(ph, inc[i], inverse) : static_cast<i32>(ph ^ 0x80000000u) >> 3) << 1, main_saw_gain);
+                if (extras) saws += extra_in[i];
+                low += multiply(band, fi);
+                const i32 high = saws - low - band - (band >> 2);                // damping 1.25
+                band += multiply(high, fi);
+                soft += multiply(low - soft, fi);
+                tone[i] = multiply(table_sine(ph) << 14, main_sine_gain) - soft;
+                ph += inc[i];
+            }
+            v.low = low; v.band = band; v.soft = soft;
         } else {
-            tone += grain >> 1;                                               // no saw: all of it heard as it is
+            for (unsigned i = 0; i < N; ++i) { tone[i] = multiply(table_sine(ph) << 14, main_sine_gain); ph += inc[i]; }
         }
-        if (layered) {
-            tone += multiply(table_sine(v.phase_up) << 14, v.up_level);
-            tone += multiply(table_sine(v.phase_down) << 14, v.down_level);
-            v.phase_up += (increment << 1) + up_extra;
-            v.phase_down += (increment >> 1) + down_extra;
+        v.phase = ph;
+    }
+    if (extras) for (unsigned i = 0; i < N; ++i) tone[i] += extra_out[i];
+    if (layered) {
+        u32 up = v.phase_up, down = v.phase_down;
+        const i32 up_level = v.up_level, down_level = v.down_level;
+        for (unsigned i = 0; i < N; ++i) {
+            tone[i] += multiply(table_sine(up) << 14, up_level) + multiply(table_sine(down) << 14, down_level);
+            up += (inc[i] << 1) + up_extra;
+            down += (inc[i] >> 1) + down_extra;
         }
-        if (chorded) {
-            tone += multiply(table_sine(v.phase_fifth) << 14, v.fifth_level);
-            tone += multiply(table_sine(v.phase_ninth) << 14, v.ninth_level);
-            v.phase_fifth += increment + (increment >> 1);
-            v.phase_ninth += (increment << 1) + (increment >> 2);
+        v.phase_up = up; v.phase_down = down;
+    }
+    if (chorded) {
+        u32 fifth = v.phase_fifth, ninth = v.phase_ninth;
+        const i32 fifth_level = v.fifth_level, ninth_level = v.ninth_level;
+        for (unsigned i = 0; i < N; ++i) {
+            tone[i] += multiply(table_sine(fifth) << 14, fifth_level) + multiply(table_sine(ninth) << 14, ninth_level);
+            fifth += inc[i] + (inc[i] >> 1);
+            ninth += (inc[i] << 1) + (inc[i] >> 2);
         }
-        if (age) {
+        v.phase_fifth = fifth; v.phase_ninth = ninth;
+    }
+    if (age) {
+        i32 tape = v.tape;
+        for (unsigned i = 0; i < N; ++i) {
             // Soft saturation: d - 4 d^3 / 27, which flattens smoothly to 1 at d = 1.5.
-            i32 d = tone + multiply(tone << 1, drive);
+            i32 d = tone[i] + multiply(tone[i] << 1, drive);
             if (d > 0x30000000) d = 0x30000000;
             if (d < -0x30000000) d = -0x30000000;
             const i32 bend_down = multiply(multiply(d, d) << 2, 1272582900);     // 4/27 d^2, Q31
             const i32 saturated = multiply(multiply(d, full - bend_down), makeup);
-            ease(v.tape, saturated, tape_rate);
-            tone += multiply(v.tape - tone, wet);
+            ease(tape, saturated, tape_rate);
+            tone[i] += multiply(tape - tone[i], wet);
         }
-        if (hiss_gain) tone += multiply(band_noise, hiss_gain);
+        v.tape = tape;
+    }
+    if (hiss_gain) for (unsigned i = 0; i < N; ++i) tone[i] += multiply(noise[i], hiss_gain);
+    for (unsigned i = 0; i < N; ++i) {
+        i32 t = tone[i];
         // A soft ceiling: untouched up to the knee, then curving smoothly over.
-        if (tone > knee || tone < -knee) {
-            const bool down = tone < 0;
-            i32 e = (down ? -tone : tone) - knee;
+        if (t > knee || t < -knee) {
+            const bool down = t < 0;
+            i32 e = (down ? -t : t) - knee;
             if (e > knee_top - knee) e = knee_top - knee;
             const i32 y = knee + e - (multiply(multiply(e, e) << 2, 0x2aaaaaab) << 2);   // e - e^2 / (4 * 0.1875)
-            tone = down ? -y : y;
+            t = down ? -y : y;
         }
         level += ramp;
-        output[i] = multiply(tone << 1, level);
-        v.phase += increment;
-        if (doubled) v.copy_phase += copy_increment;
+        output[i] = multiply(t << 1, level);
     }
 }
 }
